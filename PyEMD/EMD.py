@@ -849,12 +849,13 @@ class EMD:
             # END OF IMF SIFITING
 
             new_imf = imf.copy()
+            if should_finish is not None:
+                if should_finish(new_imf):
+                    notFinish = False
+                    break
+
             IMF = np.vstack((IMF, new_imf))
             imfNo += 1
-
-            if should_finish is not None and should_finish(new_imf):
-                notFinish = False
-                break
 
             if self.end_condition(S, IMF) or imfNo == max_imf:
                 notFinish = False
