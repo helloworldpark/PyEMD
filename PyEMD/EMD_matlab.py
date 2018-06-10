@@ -15,7 +15,7 @@ import numpy as np
 import time
 
 from scipy.interpolate import interp1d
-from PyEMD.splines import *
+from PyEMD.PyEMD.splines import *
 
 class EMD:
     """

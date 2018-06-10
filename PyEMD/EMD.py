@@ -12,7 +12,7 @@ import logging
 import numpy as np
 
 from scipy.interpolate import interp1d
-from PyEMD.splines import *
+from PyEMD.PyEMD.splines import *
 
 class EMD:
     """
@@ -719,6 +719,153 @@ class EMD:
         if y.dtype != dtype: y = y.astype(dtype)
 
         return x, y
+    
+    def stepwise_emd(self, S, T=None, max_imf=None, should_finish=None):
+        """
+                Performs Empirical Mode Decomposition on signal S.
+                The decomposition is limited to *max_imf* imfs.
+                Returns IMF functions in numpy array format.
+
+                Parameters
+                ----------
+                S : numpy array,
+                    Input signal.
+                T : numpy array, (default: None)
+                    Position or time array. If None passed numpy arange is created.
+                max_imf : int, (default: -1)
+                    IMF number to which decomposition should be performed.
+                    Negative value means *all*.
+                should_finish : lambda(S), (default: None)
+                    Lambda to determine if stop, or proceed decomposition.
+                    S is the newly decomposed signal.
+                    This should return bool.
+
+                Returns
+                -------
+                IMF : numpy array
+                    Set of IMFs producesed from input signal.
+                """
+
+        if T is None: T = np.arange(len(S), dtype=S.dtype)
+        if max_imf is None: max_imf = -1
+
+        # Make sure same types are dealt
+        S, T = self._common_dtype(S, T)
+        self.DTYPE = S.dtype
+        N = len(S)
+
+        Res = S.astype(self.DTYPE)
+        imf = np.zeros(len(S), dtype=self.DTYPE)
+        imf_old = np.nan
+
+        if S.shape != T.shape:
+            info = "Position or time array should be the same size as signal."
+            raise ValueError(info)
+
+        # Create arrays
+        imfNo = 0
+        IMF = np.empty((imfNo, N))  # Numpy container for IMF
+        notFinish = True
+
+        while (notFinish):
+            self.logger.debug('IMF -- ' + str(imfNo))
+
+            Res[:] = S - np.sum(IMF[:imfNo], axis=0)
+            imf = Res.copy()
+            mean = np.zeros(len(S), dtype=self.DTYPE)
+
+            # Counters
+            n = 0  # All iterations for current imf.
+            n_h = 0  # counts when |#zero - #ext| <=1
+
+            while (True):
+                n += 1
+                if n >= self.MAX_ITERATION:
+                    msg = "Max iterations reached for IMF. "
+                    msg += "Continueing with another IMF."
+                    self.logger.info(msg)
+                    break
+
+                ext_res = self.find_extrema(T, imf)
+                max_pos, min_pos, indzer = ext_res[0], ext_res[2], ext_res[4]
+                extNo = len(min_pos) + len(max_pos)
+                nzm = len(indzer)
+
+                if extNo > 2:
+
+                    max_env, min_env, eMax, eMin = self.extract_max_min_spline(T, imf)
+                    mean[:] = 0.5 * (max_env + min_env)
+
+                    imf_old = imf.copy()
+                    imf[:] = imf - mean
+
+                    # Fix number of iterations
+                    if self.FIXE:
+                        if n >= self.FIXE: break
+
+                    # Fix number of iterations after number of zero-crossings
+                    # and extrema differ at most by one.
+                    elif self.FIXE_H:
+
+                        res = self.find_extrema(T, imf)
+                        max_pos, min_pos, ind_zer = res[0], res[2], res[4]
+                        extNo = len(max_pos) + len(min_pos)
+                        nzm = len(ind_zer)
+
+                        if n == 1: continue
+                        if abs(extNo - nzm) > 1:
+                            n_h = 0
+                        else:
+                            n_h += 1
+
+                        # if np.all(max_val>0) and np.all(min_val<0):
+                        #    n_h += 1
+                        # else:
+                        #    n_h = 0
+
+                        # STOP
+                        if n_h >= self.FIXE_H: break
+
+                    # Stops after default stopping criteria are met
+                    else:
+                        ext_res = self.find_extrema(T, imf)
+                        max_pos, max_val, min_pos, min_val, ind_zer = ext_res
+                        extNo = len(max_pos) + len(min_pos)
+                        nzm = len(ind_zer)
+
+                        if imf_old is np.nan: continue
+
+                        f1 = self.check_imf(imf, imf_old, eMax, eMin, mean)
+                        # f2 = np.all(max_val>0) and np.all(min_val<0)
+                        f2 = abs(extNo - nzm) < 2
+
+                        # STOP
+                        if f1 and f2: break
+
+                else:  # Less than 2 ext, i.e. trend
+                    notFinish = False
+                    break
+
+            # END OF IMF SIFITING
+
+            new_imf = imf.copy()
+            IMF = np.vstack((IMF, new_imf))
+            imfNo += 1
+
+            if should_finish is not None and should_finish(new_imf):
+                notFinish = False
+                break
+
+            if self.end_condition(S, IMF) or imfNo == max_imf:
+                notFinish = False
+                break
+
+        # Saving residuum
+        Res = S - np.sum(IMF, axis=0)
+        if not np.allclose(Res, 0):
+            IMF = np.vstack((IMF, Res))
+
+        return IMF
 
     def emd(self, S, T=None, max_imf=None):
         """
@@ -742,119 +889,7 @@ class EMD:
             Set of IMFs producesed from input signal.
         """
 
-        if T is None: T = np.arange(len(S), dtype=S.dtype)
-        if max_imf is None: max_imf = -1
-
-        # Make sure same types are dealt
-        S, T = self._common_dtype(S, T)
-        self.DTYPE = S.dtype
-        N = len(S)
-
-        Res = S.astype(self.DTYPE)
-        imf = np.zeros(len(S), dtype=self.DTYPE)
-        imf_old = np.nan
-
-        if S.shape != T.shape:
-            info = "Position or time array should be the same size as signal."
-            raise ValueError(info)
-
-        # Create arrays
-        imfNo = 0
-        IMF = np.empty((imfNo, N)) # Numpy container for IMF
-        notFinish = True
-
-        while(notFinish):
-            self.logger.debug('IMF -- '+str(imfNo))
-
-            Res[:] = S - np.sum(IMF[:imfNo], axis=0)
-            imf = Res.copy()
-            mean = np.zeros(len(S), dtype=self.DTYPE)
-
-            # Counters
-            n = 0   # All iterations for current imf.
-            n_h = 0 # counts when |#zero - #ext| <=1
-
-            while(True):
-                n += 1
-                if n >= self.MAX_ITERATION:
-                    msg = "Max iterations reached for IMF. "
-                    msg+= "Continueing with another IMF."
-                    self.logger.info(msg)
-                    break
-
-                ext_res = self.find_extrema(T, imf)
-                max_pos, min_pos, indzer = ext_res[0], ext_res[2], ext_res[4]
-                extNo = len(min_pos)+len(max_pos)
-                nzm = len(indzer)
-
-                if extNo > 2:
-
-                    max_env, min_env, eMax, eMin = self.extract_max_min_spline(T, imf)
-                    mean[:] = 0.5*(max_env+min_env)
-
-                    imf_old = imf.copy()
-                    imf[:] = imf - mean
-
-                    # Fix number of iterations
-                    if self.FIXE:
-                        if n >= self.FIXE: break
-
-                    # Fix number of iterations after number of zero-crossings
-                    # and extrema differ at most by one.
-                    elif self.FIXE_H:
-
-                        res = self.find_extrema(T, imf)
-                        max_pos, min_pos, ind_zer = res[0], res[2], res[4]
-                        extNo = len(max_pos)+len(min_pos)
-                        nzm = len(ind_zer)
-
-                        if n == 1: continue
-                        if abs(extNo-nzm)>1: n_h = 0
-                        else:                n_h += 1
-
-                        #if np.all(max_val>0) and np.all(min_val<0):
-                        #    n_h += 1
-                        #else:
-                        #    n_h = 0
-
-                        # STOP
-                        if n_h >= self.FIXE_H: break
-
-                    # Stops after default stopping criteria are met
-                    else:
-                        ext_res = self.find_extrema(T, imf)
-                        max_pos, max_val, min_pos, min_val, ind_zer = ext_res
-                        extNo = len(max_pos) + len(min_pos)
-                        nzm = len(ind_zer)
-
-                        if imf_old is np.nan: continue
-
-                        f1 = self.check_imf(imf, imf_old, eMax, eMin, mean)
-                        #f2 = np.all(max_val>0) and np.all(min_val<0)
-                        f2 = abs(extNo - nzm)<2
-
-                        # STOP
-                        if f1 and f2: break
-
-                else: # Less than 2 ext, i.e. trend
-                    notFinish = False
-                    break
-
-            # END OF IMF SIFITING
-
-            IMF = np.vstack((IMF, imf.copy()))
-            imfNo += 1
-
-            if self.end_condition(S, IMF) or imfNo==max_imf:
-                notFinish = False
-                break
-
-        # Saving residuum
-        Res = S - np.sum(IMF,axis=0)
-        if not np.allclose(Res,0):
-            IMF = np.vstack((IMF, Res))
-
-        return IMF
+        return self.stepwise_emd(S, T, max_imf)
 
 ###################################################
 ## Beginning of program
