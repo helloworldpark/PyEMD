@@ -12,7 +12,7 @@ import logging
 import numpy as np
 
 from scipy.interpolate import interp1d
-from PyEMD.PyEMD.splines import *
+from .splines import *
 
 class EMD:
     """
@@ -735,9 +735,9 @@ class EMD:
                 max_imf : int, (default: -1)
                     IMF number to which decomposition should be performed.
                     Negative value means *all*.
-                should_finish : lambda(S), (default: None)
+                should_finish : function(numpy.ndarray), (default: None)
                     Lambda to determine if stop, or proceed decomposition.
-                    S is the newly decomposed signal.
+                    Argument is S, the newly decomposed signal.
                     This should return bool.
 
                 Returns
